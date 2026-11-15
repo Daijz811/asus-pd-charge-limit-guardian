@@ -23,6 +23,12 @@ Only when `PDIN=1`, `ACIN=0`, and `State=6`:
 
 The tool changes runtime registers without flashing firmware. Check external PD power and battery current to assess the result. See the [investigation notes](docs/INVESTIGATION.md).
 
+## How charging current limiting works
+
+Register `0x14` sets the charging-current regulation limit. Feedback controls charging, while actual battery current also depends on voltage targets, battery condition, and load. The script's nominal “64 mA” interpretation of `0x0040` is neither a constant current delivered to the battery nor a limit on total PD input current.
+
+On this device, raising the voltage target while keeping `0x14=0` left the battery discharging. Using `0x0040` together with voltage-target maintenance restored PD input, so the workaround retains this tested parameter. See the [technical explanation and experiments](docs/INVESTIGATION.md#充电限流原理与参数选择).
+
 ## Known issue: slow battery charging
 
 This workaround retains a nonzero charging target (`0x14=0x0040`) to sustain PD input. A small current may continue to charge the battery, gradually raising its state of charge above the MyASUS / G-Helper limit.
