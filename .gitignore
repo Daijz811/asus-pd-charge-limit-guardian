@@ -1,0 +1,6 @@
+# Runtime files and local development output
+*.log
+last-error.txt
+test-results/
+.DS_Store
+Thumbs.db

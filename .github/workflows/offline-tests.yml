@@ -1,0 +1,17 @@
+name: Offline PowerShell checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse scripts and run mocked EC/SMBus tests
+        shell: powershell
+        run: .\tests\Test-Guardian.ps1
