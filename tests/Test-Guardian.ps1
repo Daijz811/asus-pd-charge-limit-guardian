@@ -66,12 +66,12 @@ Test-Case 'Idle on the final allowed poll succeeds' {
     $script:Mode = 'last-poll'
     Assert-True ((Invoke-ChargerWord 0xFE -1) -eq 0x0049) 'Final poll was rejected.'
 }
-Test-Case 'Current and voltage writes keep the original targets and protocol' {
+Test-Case 'Current and voltage writes use the configured targets and protocol' {
     Write-ChargerReg14 64
     Assert-True ($script:Writes[1][1] -eq 64 -and $script:Writes[2][1] -eq 0 -and $script:Writes[4][1] -eq 0x14 -and $script:Writes[5][1] -eq 8) 'Current write changed.'
     $script:Writes = @()
-    Write-ChargerReg15 17000
-    Assert-True ($script:Writes[1][1] -eq 0x68 -and $script:Writes[2][1] -eq 0x42 -and $script:Writes[4][1] -eq 0x15 -and $script:Writes[5][1] -eq 8) 'Voltage write changed.'
+    Write-ChargerReg15 16400
+    Assert-True ($script:Writes[1][1] -eq 0x10 -and $script:Writes[2][1] -eq 0x40 -and $script:Writes[4][1] -eq 0x15 -and $script:Writes[5][1] -eq 8) 'Voltage write changed.'
 }
 Test-Case 'Null or incomplete WMI results throw' {
     foreach ($bad in @($null, [pscustomobject]@{}, [pscustomobject]@{OutData = @(0)}, [pscustomobject]@{OutData = @(0, $null)})) {
@@ -84,5 +84,28 @@ Test-Case 'Valid WMI zero and nonzero results remain valid' {
         $script:CimResult = [pscustomobject]@{OutData = @(0, $value)}
         Assert-True ((Read-ProviderMock 0xFE700B00L 1) -eq $value) 'Valid WMI result changed.'
     }
+}
+# Exercise the voltage condition extracted from the actual worker, with mocked I/O.
+$voltageConditions = @($ast.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.IfStatementAst] -and
+    $n.Clauses[0].Item1.Extent.Text -match 'Read-ChargerRegWord 0x15'
+}, $true))
+Assert-True ($voltageConditions.Count -eq 1) 'Worker voltage condition not found.'
+$applyVoltage = [ScriptBlock]::Create($voltageConditions[0].Extent.Text)
+function Read-ChargerRegWord([byte]$reg) { return $script:TestVoltage }
+Test-Case 'Worker lowers the previous 17000 target to 16400' {
+    $script:TestVoltage = 17000
+    & $applyVoltage
+    Assert-True ($script:Writes.Count -eq 6 -and $script:Writes[1][1] -eq 0x10 -and $script:Writes[2][1] -eq 0x40) 'Previous target was not lowered.'
+}
+Test-Case 'Worker raises a low voltage target to 16400' {
+    $script:TestVoltage = 16064
+    & $applyVoltage
+    Assert-True ($script:Writes.Count -eq 6 -and $script:Writes[1][1] -eq 0x10 -and $script:Writes[2][1] -eq 0x40) 'Low target was not updated.'
+}
+Test-Case 'Worker leaves a matching 16400 target unchanged' {
+    $script:TestVoltage = 16400
+    & $applyVoltage
+    Assert-True ($script:Writes.Count -eq 0) 'Matching target caused a redundant write.'
 }
 Write-Host ('Passed {0} offline tests.' -f $script:Passed)

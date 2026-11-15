@@ -9,7 +9,7 @@
 #   - GUI 线程      ：只负责绘制界面，不碰任何硬件/WMI，因此不会卡顿。
 #   - 后台轮询线程  ：读取 EC 状态、执行开/关操作，把结果放入同步表供界面显示。
 #   - 守护进程      ：-BackgroundWorker，无窗口；仅在 PDIN=1, ACIN=0, State=6 时
-#                     维持 Reg0x14 = 64 mA、Reg0x15 >= 16800 mV (写入 17000 mV)。
+#                     维持 Reg0x14 = 64 mA、Reg0x15 = 16400 mV。
 #   - 守护进程与面板通过命名互斥体共享 SMBus 邮筒，避免同时操作。
 # =====================================================================
 
@@ -222,7 +222,7 @@ if ($BackgroundWorker) {
                         if (-not $state.Verified) { $state.Verified = Test-RenesasPdChip }
                         if ($state.Verified) {
                             if ((Read-ChargerRegWord 0x14) -eq 0)     { Write-ChargerReg14 64 }
-                            if ((Read-ChargerRegWord 0x15) -lt 16800) { Write-ChargerReg15 17000 }
+                            if ((Read-ChargerRegWord 0x15) -ne 16400) { Write-ChargerReg15 16400 }
                         }
                     }
                     $wait = 2000
