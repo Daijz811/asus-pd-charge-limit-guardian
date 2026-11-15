@@ -1,13 +1,7 @@
-# Changelog
+# 更新记录
 
-## 0.2.1 — 2026-11-15
+## v2 通信补丁 · 2026-11-15
 
-Initial public package, based on the maintainer's working v2 script.
-
-- Retain the original runtime register pair and visual panel.
-- Add GU603VV / BIOS 315 gating, SMBus timeout/status handling, write readback, and explicit mutex timeout errors.
-- Stop intervention on communication failure and report unconfirmed restoration.
-- Show register confirmation separately from real power-flow measurements.
-- Include Chinese/English documentation, contribution attribution, and offline hardware-mocked tests.
-
-Hardware success is reported for the preceding script. New error-handling changes are offline-tested and await hardware regression.
+- 基于维护者的 v2 脚本，保留修复参数、界面、轮询和启动流程。
+- WMI 返回空数据时报错；SMBus 邮筒等待或事务完成超时后中止本轮。
+- 提供使用说明、贡献记录、离线检查及 CC BY-NC-SA 4.0 许可。

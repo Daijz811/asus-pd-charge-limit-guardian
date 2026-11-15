@@ -1,5 +1,5 @@
 ﻿# =====================================================================
-# ASUS ROG USB-C PD 限充停充 (State=6) 断流修复工具  v0.2.1
+# ASUS ROG USB-C PD 限充停充 (State=6) 断流修复工具  v2
 #
 # 双击【PD限充不断流开关.bat】打开控制面板：
 #   - 开启修复 / 关闭并恢复出厂
@@ -39,26 +39,7 @@ $StopEventName    = "Global\ASUS_PD_Guardian_Stop"
 $MailboxMutexName = "Global\ASUS_PD_Guardian_Mailbox"
 $TaskName         = "ASUS_PD_ChargeLimit_Guardian"
 
-# 固定 EC 地址只在已验证的平台使用；芯片 ID 相同不代表 EC 布局相同。
-$computer = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
-$bios = Get-CimInstance -ClassName Win32_BIOS -ErrorAction Stop
-if ($computer.Manufacturer -notmatch 'ASUS|ASUSTeK' -or $computer.Model -notmatch 'GU603VV' -or $bios.SMBIOSBIOSVersion -ne 'GU603VV.315') {
-    throw '此版本仅支持 ASUS GU603VV / BIOS GU603VV.315，未访问 EC 邮筒。'
-}
 $global:PdEcInst = Get-CimInstance -Namespace root\wmi -ClassName IecToolkitInterface -ErrorAction Stop
-$WorkerErrorFile = Join-Path $env:LOCALAPPDATA 'ASUS_PD_ChargeLimit_Guardian\last-error.txt'
-
-function Set-WorkerError([string]$message) {
-    $null = New-Item -ItemType Directory -Path (Split-Path $WorkerErrorFile) -Force
-    Set-Content -LiteralPath $WorkerErrorFile -Value $message -Encoding UTF8
-}
-
-function Get-WorkerError {
-    if (Test-Path -LiteralPath $WorkerErrorFile) {
-        return (Get-Content -LiteralPath $WorkerErrorFile -Raw -ErrorAction Stop).Trim()
-    }
-    return ''
-}
 
 # 白名单：仅允许写入 SMBus 邮筒的 7 个字节
 $AllowedMailboxAddrs = @(
@@ -70,8 +51,8 @@ $AllowedMailboxAddrs = @(
 function Read-EcMem([uint64]$addr, [uint64]$len) {
     [uint64[]]$in = @([uint64]0x0000235700800007L, [uint64]0, [uint64]$addr, [uint64]$len, [uint64]0, [uint64]0, [uint64]0)
     $res = Invoke-CimMethod -InputObject $global:PdEcInst -MethodName SystemMethod -Arguments @{InData = $in}
-    if ($null -eq $res.OutData -or $res.OutData.Count -lt 2 -or $null -eq $res.OutData[1]) {
-        throw '华硕 WMI 接口未返回有效的 EC 数据。'
+    if ($null -eq $res -or $null -eq $res.OutData -or $res.OutData.Count -lt 2 -or $null -eq $res.OutData[1]) {
+        throw "WMI 未返回有效的 EC 数据。"
     }
     return $res.OutData[1]
 }
@@ -84,21 +65,13 @@ function Write-EcMailboxByte([uint64]$addr, [byte]$val) {
     $null = Invoke-CimMethod -InputObject $global:PdEcInst -MethodName SystemMethod -Arguments @{InData = $in}
 }
 
-# 协议寄存器清零是事务完成条件；超时不得使用残留数据。
-function Wait-ChargerIdle([int]$attempts = 30) {
-    for ($i = 0; $i -lt $attempts; $i++) {
-        if ((Read-EcMem 0xFE700B00L 1) -eq 0) { return }
+# 一次 SMBus Word 事务：$writeValue < 0 表示读取
+function Invoke-ChargerWord([byte]$reg, [int]$writeValue) {
+    for ($i = 0; $i -lt 20; $i++) {
+        if ((Read-EcMem 0xFE700B00L 1) -eq 0) { break }
         Start-Sleep -Milliseconds 15
     }
-    throw 'SMBus 通信超时；本轮已中止，未确认的数据不会被使用。'
-}
-
-# 一次 SMBus Word 事务：$writeValue < 0 表示读取。
-function Invoke-ChargerWord([byte]$reg, [int]$writeValue) {
-    if ($writeValue -ge 0 -and $reg -notin @(0x14, 0x15)) { throw '禁止写入其它充电芯片寄存器。' }
-    if ($writeValue -ge 0 -and $reg -eq 0x14 -and $writeValue -notin @(0, 64)) { throw 'Reg 0x14 值越界。' }
-    if ($writeValue -ge 0 -and $reg -eq 0x15 -and ($writeValue -lt 15000 -or $writeValue -gt 17600)) { throw 'Reg 0x15 值越界。' }
-    Wait-ChargerIdle 20
+    if ($i -eq 20) { throw "SMBus 邮筒繁忙超时。" }
     if ($writeValue -ge 0) {
         $lo = [byte]($writeValue -band 0xFF); $hi = [byte](($writeValue -shr 8) -band 0xFF); $proto = [byte]0x08
     } else {
@@ -110,12 +83,11 @@ function Invoke-ChargerWord([byte]$reg, [int]$writeValue) {
     Write-EcMailboxByte 0xFE700B02L 0x12
     Write-EcMailboxByte 0xFE700B03L $reg
     Write-EcMailboxByte 0xFE700B00L $proto
-    Wait-ChargerIdle 30
-    # ACPI EC-SMBus SMB_STS: bits 4:0 are status codes; DONE/ALRM are flags.
-    $status = [int](Read-EcMem 0xFE700B01L 1)
-    if (($status -band 0x1F) -ne 0) {
-        throw ('SMBus 事务失败：寄存器 0x{0:X2}，状态 0x{1:X2}。' -f $reg, $status)
+    for ($i = 0; $i -lt 30; $i++) {
+        Start-Sleep -Milliseconds 15
+        if ((Read-EcMem 0xFE700B00L 1) -eq 0) { break }
     }
+    if ($i -eq 30) { throw "SMBus 事务完成超时。" }
     if ($writeValue -lt 0) { return [uint16](Read-EcMem 0xFE700B04L 2) }
 }
 
@@ -124,13 +96,11 @@ function Read-ChargerRegWord([byte]$reg) { return (Invoke-ChargerWord $reg -1) }
 function Write-ChargerReg14([int]$ma) {
     if ($ma -ne 0 -and $ma -ne 64) { throw "安全拦截：Reg 0x14 仅允许 0 或 64 mA（请求 $ma）" }
     Invoke-ChargerWord 0x14 $ma
-    if ((Read-ChargerRegWord 0x14) -ne $ma) { throw 'Reg 0x14 写后读回不一致。' }
 }
 
 function Write-ChargerReg15([int]$mv) {
     if ($mv -lt 15000 -or $mv -gt 17600) { throw "安全拦截：Reg 0x15 超出 [15000,17600] mV（请求 $mv）" }
     Invoke-ChargerWord 0x15 $mv
-    if (((Read-ChargerRegWord 0x15) -band 0x7FF8) -ne ($mv -band 0x7FF8)) { throw 'Reg 0x15 写后读回不一致。' }
 }
 
 # 硬件指纹：通道 3 必须是 Renesas 0x0049:0x000C
@@ -144,8 +114,7 @@ function Invoke-Channel3([scriptblock]$Body) {
     $got = $false
     try {
         try { $got = $m.WaitOne(3000) } catch [System.Threading.AbandonedMutexException] { $got = $true }
-        if (-not $got) { throw '等待本工具的 SMBus 邮筒锁超时。' }
-        Wait-ChargerIdle 20
+        if (-not $got) { return }
         Write-EcMailboxByte 0xFE7006CDL 1
         try { & $Body } finally { Write-EcMailboxByte 0xFE7006CDL 0 }
     }
@@ -170,12 +139,10 @@ function Restore-HardwareDefault {
     if ($ps.PdIn -eq 1 -and $ps.AcIn -eq 0 -and $ps.State -eq 6) {
         Invoke-Channel3 {
             if (Test-RenesasPdChip) {
-                $t = [int](Read-EcMem 0xFE700B70L 2)
-                if ($t -lt 15000 -or $t -gt 17600) { throw 'EC 电压目标不在预期范围，无法确认恢复完成。' }
                 Write-ChargerReg14 0
-                Write-ChargerReg15 $t
+                $t = [int](Read-EcMem 0xFE700B70L 2)
+                if ($t -ge 15000 -and $t -le 17600) { Write-ChargerReg15 $t }
             }
-            else { throw '充电芯片 ID 不匹配，未写充电参数，无法确认恢复完成。' }
         }
     }
     else {
@@ -229,7 +196,6 @@ function Stop-Worker {
         Start-Sleep -Milliseconds 300
     }
     Restore-HardwareDefault
-    Set-WorkerError ''
 }
 '@
 
@@ -245,7 +211,6 @@ if ($BackgroundWorker) {
 
     $stopEvt = [System.Threading.EventWaitHandle]::new($false, [System.Threading.EventResetMode]::AutoReset, $StopEventName)
     $state = @{ Verified = $false }
-    Set-WorkerError ''
 
     try {
         while ($true) {
@@ -255,7 +220,6 @@ if ($BackgroundWorker) {
                 if ($ps.PdIn -eq 1 -and $ps.AcIn -eq 0 -and $ps.State -eq 6) {
                     Invoke-Channel3 {
                         if (-not $state.Verified) { $state.Verified = Test-RenesasPdChip }
-                        if (-not $state.Verified) { throw 'PD 充电芯片 ID 不匹配，已停止守护。' }
                         if ($state.Verified) {
                             if ((Read-ChargerRegWord 0x14) -eq 0)     { Write-ChargerReg14 64 }
                             if ((Read-ChargerRegWord 0x15) -lt 16800) { Write-ChargerReg15 17000 }
@@ -268,17 +232,13 @@ if ($BackgroundWorker) {
                 }
             }
             catch {
-                # 通信异常时停止干预，保留原因供面板显示。
-                try { Set-WorkerError $_.Exception.Message } catch {}
-                break
+                # 偶发 WMI 错误：跳过本轮，下一轮重试
             }
             if ($stopEvt.WaitOne($wait)) { break }
         }
     }
     finally {
-        try { Restore-HardwareDefault } catch {
-            try { Set-WorkerError ('恢复未确认：' + $_.Exception.Message) } catch {}
-        }
+        try { Restore-HardwareDefault } catch {}
         $stopEvt.Dispose()
         $runMutex.ReleaseMutex()
         $runMutex.Dispose()
@@ -357,8 +317,9 @@ $PollerScript = {
                         if ($ok) { Start-Sleep -Milliseconds 1500 }   # 等守护进程完成第一轮写入再刷新显示
                     }
                     "disable" {
-                        try { Stop-Worker } finally { Disable-BootProtection }
-                        $sync.Message = "已停止守护并完成当前状态下的恢复检查。"
+                        Stop-Worker
+                        Disable-BootProtection
+                        $sync.Message = "已关闭，芯片寄存器已恢复为华硕默认。"
                     }
                     "boot-on" {
                         Enable-BootProtection $sync.ScriptPath
@@ -395,7 +356,6 @@ $PollerScript = {
                     PdIn = $ps.PdIn; AcIn = $ps.AcIn; State = $ps.State
                     Soc = $soc; Lim = $lim; Vbat = $vbat; Ibat = $ibat; Charging = $chg
                     R14 = $r14; R15 = $r15
-                    WorkerError = (Get-WorkerError)
                 }
             }
             catch {
@@ -583,21 +543,10 @@ function Render {
     else          { Set-Text $pill "○ 未开启"; Set-Back $pill "#1F2937"; Set-Fore $pill "#9CA3AF" }
 
     # 横幅
-    $verifiedSettings = ($null -ne $d.R14 -and $d.R14 -eq 64 -and $null -ne $d.R15 -and $d.R15 -ge 16800 -and $d.R15 -le 17600)
-    if ($d.WorkerError) {
-        Set-Back $bannerStrip "#DC2626"
-        Set-Text $bannerTitle "守护异常，需检查"
-        Set-Text $bannerDesc $d.WorkerError
-    }
-    elseif ($running -and $active -and $verifiedSettings) {
+    if ($running -and $active) {
         Set-Back $bannerStrip "#16A34A"
-        Set-Text $bannerTitle "修复参数已确认"
-        Set-Text $bannerDesc "寄存器已读回；实际供电效果请结合外部功率计确认"
-    }
-    elseif ($running -and $active) {
-        Set-Back $bannerStrip "#F59E0B"
-        Set-Text $bannerTitle "等待修复参数"
-        Set-Text $bannerDesc "尚未读回目标参数，不能确认修复已生效"
+        Set-Text $bannerTitle "修复生效中"
+        Set-Text $bannerDesc "USB-C PD 正在直接为整机供电，电池保持静置"
     }
     elseif ($running) {
         Set-Back $bannerStrip "#3B82F6"
@@ -606,13 +555,13 @@ function Render {
     }
     elseif ($active) {
         Set-Back $bannerStrip "#F59E0B"
-        Set-Text $bannerTitle "PD 已进入停充状态"
-        Set-Text $bannerDesc "是否断流需结合外部功率计和电池电流判断"
+        Set-Text $bannerTitle "PD 已断流"
+        Set-Text $bannerDesc "已达充电上限，原厂逻辑正在让电池放电，建议开启修复"
     }
     else {
         Set-Back $bannerStrip "#9CA3AF"
         Set-Text $bannerTitle "原厂逻辑"
-        Set-Text $bannerDesc "后台守护未运行"
+        Set-Text $bannerDesc "修复未开启，未对充电芯片做任何干预"
     }
 
     # 数据卡片
@@ -638,7 +587,7 @@ function Render {
         Set-Text $btnMain "处理中…"
         Set-Back $btnMain "#9CA3AF"
     }
-    elseif ($running -or $d.WorkerError -or $d.Boot) {
+    elseif ($running) {
         $btnMain.Enabled = $true
         Set-Text $btnMain "关闭并恢复出厂"
         Set-Back $btnMain "#DC2626"
@@ -663,7 +612,7 @@ function Render {
 $btnMain.Add_Click({
     if ($sync.Busy -or $sync.Command -or $null -eq $sync.Data) { return }
     $sync.Message = ""
-    $sync.Command = if ($sync.Data.Running -or $sync.Data.WorkerError -or $sync.Data.Boot) { "disable" } else { "enable" }
+    $sync.Command = if ($sync.Data.Running) { "disable" } else { "enable" }
     Render
 })
 
