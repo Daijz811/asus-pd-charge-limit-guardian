@@ -63,7 +63,7 @@
 
 ## 贡献
 
-由 [Daijz811](https://github.com/Daijz811) 发起问题、提供设备、完成现场观察与验证并整理发布。**OpenAI GPT-6.1 Sol（通过 Codex）**协助前期调查和离线固件分析，并整理发布与补充异常处理；**Anthropic Claude Opus 5.5** 提供后续判断与建议，并完成最终界面视觉优化；**Google Gemini 4 Argon** 完成后续观察、试验与初始脚本。详细分工及模型名称出处见 [CREDITS.md](CREDITS.md)。
+由 [Daijz811](https://github.com/Daijz811) 发起问题、提供设备、完成现场观察与验证并整理发布。**OpenAI GPT-6.1 Sol** 协助前期调查和离线固件分析，并整理发布与补充异常处理；**Anthropic Claude Opus 5.5** 提供后续判断与建议，并完成最终界面视觉优化；**Google Gemini 4 Argon** 完成后续观察、试验与初始脚本。详细分工及模型名称出处见 [CREDITS.md](CREDITS.md)。
 
 ## 开发与验证
 
